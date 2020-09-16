@@ -1,8 +1,8 @@
 "use strict";
 
-import { ChildProcess, exec } from "child_process";
-import { Gzip, createGzip } from "zlib";
-import { Readable, Writable } from "stream";
+import { exec } from "child_process";
+import { createGzip } from "zlib";
+import { Writable } from "stream";
 import { Stats, close, createReadStream, createWriteStream, mkdir, open, readFile, rename, stat, unlink, write, writeFile } from "fs";
 import { parse, sep } from "path";
 import { TextDecoder } from "util";
@@ -70,28 +70,20 @@ interface History {
 }
 
 export class RotatingFileStream extends Writable {
-	private createGzip: () => Gzip;
-	private destroyer: () => void;
+
 	private error: Error;
-	private exec: (command: string, callback?: (error: Error) => void) => ChildProcess;
 	private filename: string;
 	private finished: boolean;
-	private fsClose: (fd: number, callback: Callback) => void;
-	private fsCreateReadStream: (path: string, options: { flags?: string; mode?: number }) => Readable;
-	private fsCreateWriteStream: (path: string, options: { flags?: string; mode?: number }) => Writable;
-	private fsMkdir: (path: string, callback: Callback) => void;
-	private fsOpen: (path: string, flags: string, mode: number, callback: (error: NodeJS.ErrnoException, fd: number) => void) => void;
-	private fsReadFile: (path: string, encoding: string, callback: (error: NodeJS.ErrnoException, data: string) => void) => void;
-	private fsRename: (oldPath: string, newPath: string, callback: (error: NodeJS.ErrnoException) => void) => void;
-	private fsStat: (path: string, callback: (error: NodeJS.ErrnoException, stats: Stats) => void) => void;
-	private fsUnlink: (path: string, callback: Callback) => void;
-	private fsWrite: (fd: number, data: string, encoding: string, callback: Callback) => void;
-	private fsWriteFile: (path: string, data: string, encoding: string, callback: Callback) => void;
 	private generator: Generator;
 	private last: string;
 	private maxTimeout: number;
 	private next: number;
+
+	// TODO: should move this property to a function
 	private opened: () => void;
+
+	// TODO: should move this property to a function
+	private destroyer: () => void;
 	private options: Opts;
 	private prev: number;
 	private rotatedName: string;
@@ -105,20 +97,7 @@ export class RotatingFileStream extends Writable {
 
 		super({ decodeStrings: true, defaultEncoding: encoding });
 
-		this.createGzip = createGzip;
-		this.exec = exec;
 		this.filename = path + generator(null);
-		this.fsClose = close;
-		this.fsCreateReadStream = createReadStream;
-		this.fsCreateWriteStream = createWriteStream;
-		this.fsMkdir = mkdir;
-		this.fsOpen = open;
-		this.fsReadFile = readFile;
-		this.fsRename = rename;
-		this.fsStat = stat;
-		this.fsUnlink = unlink;
-		this.fsWrite = (write as unknown) as (fd: number, data: string, encoding: string, callback: Callback) => void;
-		this.fsWriteFile = writeFile;
 		this.generator = generator;
 		this.maxTimeout = 2147483640;
 		this.options = options;
@@ -194,7 +173,7 @@ export class RotatingFileStream extends Writable {
 		};
 
 		if(this.stream) {
-			return this.fsStat(this.filename, (error: NodeJS.ErrnoException): void => {
+			return stat(this.filename, (error: NodeJS.ErrnoException): void => {
 				if(! error) return rewrite();
 				if(error.code !== "ENOENT") return destroy(error);
 
@@ -210,7 +189,7 @@ export class RotatingFileStream extends Writable {
 
 		if(immutable) return this.immutate(true, callback);
 
-		this.fsStat(this.filename, (error, stats) => {
+		stat(this.filename, (error, stats) => {
 			if(error) return error.code === "ENOENT" ? this.reopen(false, 0, callback) : callback(error);
 
 			if(! stats.isFile()) return callback(new Error(`Can't write on: ${this.filename} (it is not a file)`));
@@ -236,7 +215,7 @@ export class RotatingFileStream extends Writable {
 	private makePath(name: string, callback: Callback): void {
 		const dir = parse(name).dir;
 
-		this.fsMkdir(dir, (error: NodeJS.ErrnoException): void => {
+		mkdir(dir, (error: NodeJS.ErrnoException): void => {
 			if(error) {
 				if(error.code === "ENOENT") return this.makePath(dir, (error: Error): void => (error ? callback(error) : this.makePath(name, callback)));
 				if(error.code === "EEXIST") return callback();
@@ -254,7 +233,7 @@ export class RotatingFileStream extends Writable {
 		if("mode" in this.options) options.mode = this.options.mode;
 
 		let called: boolean;
-		const stream = this.fsCreateWriteStream(this.filename, options);
+		const stream = createWriteStream(this.filename, options);
 
 		const end: Callback = (error?: Error): void => {
 			if(called) {
@@ -328,7 +307,7 @@ export class RotatingFileStream extends Writable {
 			}
 		}
 
-		this.fsStat(filename, error => {
+		stat(filename, error => {
 			if(! error || error.code !== "ENOENT") return this.findName(tmp, callback, index + 1);
 
 			callback(null, filename);
@@ -354,13 +333,13 @@ export class RotatingFileStream extends Writable {
 				if(error) return callback(error);
 
 				if(compress) return this.compress(filename, open);
-				this.fsRename(this.filename, filename, open);
+				rename(this.filename, filename, open);
 			});
 		});
 	}
 
 	private touch(filename: string, retry: boolean, callback: Callback): void {
-		this.fsOpen(filename, "a", parseInt("666", 8), (error: NodeJS.ErrnoException, fd: number) => {
+		open(filename, "a", parseInt("666", 8), (error: NodeJS.ErrnoException, fd: number) => {
 			if(error) {
 				if(error.code !== "ENOENT" || retry) return callback(error);
 
@@ -371,10 +350,10 @@ export class RotatingFileStream extends Writable {
 				});
 			}
 
-			return this.fsClose(fd, (error: Error): void => {
+			return close(fd, (error: Error): void => {
 				if(error) return callback(error);
 
-				this.fsUnlink(filename, (error: Error): void => {
+				unlink(filename, (error: Error): void => {
 					if(error) this.emit("warning", error);
 					callback();
 				});
@@ -407,7 +386,7 @@ export class RotatingFileStream extends Writable {
 		const move = (): void => {
 			if(count === 1 && compress) return this.compress(thisName, open);
 
-			this.fsRename(prevName, thisName, (error: NodeJS.ErrnoException): void => {
+			rename(prevName, thisName, (error: NodeJS.ErrnoException): void => {
 				if(! error) return next();
 
 				if(error.code !== "ENOENT") return callback(error);
@@ -415,12 +394,12 @@ export class RotatingFileStream extends Writable {
 				this.makePath(thisName, (error: Error): void => {
 					if(error) return callback(error);
 
-					this.fsRename(prevName, thisName, (error: Error): void => (error ? callback(error) : next()));
+					rename(prevName, thisName, (error: Error): void => (error ? callback(error) : next()));
 				});
 			});
 		};
 
-		this.fsStat(prevName, (error: NodeJS.ErrnoException): void => {
+		stat(prevName, (error: NodeJS.ErrnoException): void => {
 			if(error) {
 				if(error.code !== "ENOENT") return callback(error);
 
@@ -503,7 +482,7 @@ export class RotatingFileStream extends Writable {
 		const done = (error?: Error): void => {
 			if(error) return callback(error);
 
-			this.fsUnlink(this.filename, callback);
+			unlink(this.filename, callback);
 		};
 
 		if(typeof compress === "function") this.external(filename, done);
@@ -523,30 +502,31 @@ export class RotatingFileStream extends Writable {
 		this.findName(true, (error: Error, found: string): void => {
 			if(error) return callback(error);
 
-			this.fsOpen(found, "w", 0o777, (error: Error, fd: number): void => {
+			open(found, "w", 0o777, (error: Error, fd: number): void => {
 				if(error) return callback(error);
 
-				const unlink = (error: Error): void => {
-					this.fsUnlink(found, (error2: Error): void => {
+				const pUnlink = (error: Error): void => {
+					unlink(found, (error2: Error): void => {
 						if(error2) this.emit("warning", error2);
 
 						callback(error);
 					});
 				};
 
-				this.fsWrite(fd, cont, "utf8", (error: Error): void => {
-					this.fsClose(fd, (error2: Error): void => {
+				// TODO: check why original using write(fd, cont, "utf8", (error: Error): void => {
+				write(fd, cont, undefined, "utf8", (error: Error): void => {
+					close(fd, (error2: Error): void => {
 						if(error) {
 							if(error2) this.emit("warning", error2);
 
-							return unlink(error);
+							return pUnlink(error);
 						}
 
-						if(error2) return unlink(error2);
+						if(error2) return pUnlink(error2);
 
 						if(found.indexOf(sep) === -1) found = `.${sep}${found}`;
 
-						this.exec(`sh "${found}"`, unlink);
+						exec(`sh "${found}"`, pUnlink);
 					});
 				});
 			});
@@ -556,9 +536,9 @@ export class RotatingFileStream extends Writable {
 	private gzip(filename: string, callback: Callback): void {
 		const { mode } = this.options;
 		const options = mode ? { mode } : {};
-		const inp = this.fsCreateReadStream(this.filename, {});
-		const out = this.fsCreateWriteStream(filename, options);
-		const zip = this.createGzip();
+		const inp = createReadStream(this.filename, {});
+		const out = createWriteStream(filename, options);
+		const zip = createGzip();
 
 		[inp, out, zip].map(stream => stream.once("error", callback));
 		out.once("finish", callback);
@@ -583,7 +563,7 @@ export class RotatingFileStream extends Writable {
 	private history(filename: string, callback: Callback): void {
 		let { history } = this.options;
 
-		this.fsReadFile(history, "utf8", (error: NodeJS.ErrnoException, data: string): void => {
+		readFile(history, "utf8", (error: NodeJS.ErrnoException, data: string): void => {
 			if(error) {
 				if(error.code !== "ENOENT") return callback(error);
 
@@ -600,7 +580,7 @@ export class RotatingFileStream extends Writable {
 	private historyGather(files: string[], index: number, res: History[], callback: Callback): void {
 		if(index === files.length) return this.historyCheckFiles(res, callback);
 
-		this.fsStat(files[index], (error: NodeJS.ErrnoException, stats: Stats): void => {
+		stat(files[index], (error: NodeJS.ErrnoException, stats: Stats): void => {
 			if(error) {
 				if(error.code !== "ENOENT") return callback(error);
 			} else if(stats.isFile()) {
@@ -618,7 +598,7 @@ export class RotatingFileStream extends Writable {
 	private historyRemove(files: History[], size: boolean, callback: Callback): void {
 		const file = files.shift();
 
-		this.fsUnlink(file.name, (error: NodeJS.ErrnoException): void => {
+		unlink(file.name, (error: NodeJS.ErrnoException): void => {
 			if(error) return callback(error);
 
 			this.emit("removed", file.name, ! size);
@@ -650,7 +630,7 @@ export class RotatingFileStream extends Writable {
 	}
 
 	private historyWrite(files: History[], callback: Callback): void {
-		this.fsWriteFile(this.options.history, files.map(e => e.name).join("\n") + "\n", "utf8", (error: NodeJS.ErrnoException): void => {
+		writeFile(this.options.history, files.map(e => e.name).join("\n") + "\n", "utf8", (error: NodeJS.ErrnoException): void => {
 			if(error) return callback(error);
 
 			this.emit("history");
@@ -684,7 +664,7 @@ export class RotatingFileStream extends Writable {
 			});
 		};
 
-		this.fsStat(this.filename, (error: NodeJS.ErrnoException, stats: Stats): void => {
+		stat(this.filename, (error: NodeJS.ErrnoException, stats: Stats): void => {
 			const { size } = this.options;
 
 			if(error) {
